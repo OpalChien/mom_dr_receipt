@@ -23,6 +23,7 @@ except ImportError:  # Lets the app show a helpful setup message instead of cras
 
 APP_DIR = Path(__file__).parent
 LOCAL_LOG_FILENAME = "mom_dr_receipt_log.csv"
+LOCAL_RECEIPT_FOLDER_NAME = "receipts"
 SHEET_NAME = "mom_dr收據_log"
 SHEET_HEADERS = [
     "created_at",
@@ -85,6 +86,9 @@ TEXT = {
         "google_not_ready": "Google 尚未連動：目前只會寫入本機 CSV。",
         "local_log_folder": "本機紀錄資料夾路徑",
         "local_log_file": "目前本機紀錄檔",
+        "local_receipt_folder": "本機收據 JPG 資料夾路徑",
+        "local_receipt_file": "已儲存收據 JPG",
+        "local_receipt_browse": "瀏覽本機已存 JPG",
         "local_folder_help": "本機執行時可讀寫這個資料夾；Streamlit Cloud 不能直接讀你的 Windows 電腦資料夾。",
         "record_source": "紀錄來源",
         "google_records": "Google 試算表",
@@ -99,6 +103,10 @@ TEXT = {
         "imported": "已匯入 {count} 筆新紀錄。",
         "no_new_records": "沒有新紀錄需要匯入。",
         "invalid_csv": "CSV 格式不正確，請上傳由本工具下載的紀錄檔。",
+        "select_record_print": "選一筆紀錄預覽 / 列印",
+        "selected_receipt": "選取的收據",
+        "saved_local_jpg": "已儲存 JPG 到本機資料夾。",
+        "no_local_jpg": "目前沒有本機 JPG 檔。",
         "receipt_title": "免用統一發票收據",
         "tax_id_label": "統一編號",
         "signature": "簽章",
@@ -145,6 +153,9 @@ TEXT = {
         "google_not_ready": "Google is not connected. Records are saved only to a local CSV.",
         "local_log_folder": "Local log folder path",
         "local_log_file": "Current local log file",
+        "local_receipt_folder": "Local receipt JPG folder path",
+        "local_receipt_file": "Saved receipt JPG",
+        "local_receipt_browse": "Browse saved local JPGs",
         "local_folder_help": "When running locally, the app can read and write this folder. Streamlit Cloud cannot directly read folders on your Windows computer.",
         "record_source": "Record source",
         "google_records": "Google Sheet",
@@ -159,6 +170,10 @@ TEXT = {
         "imported": "Imported {count} new records.",
         "no_new_records": "No new records to import.",
         "invalid_csv": "Invalid CSV. Please upload a record file downloaded from this tool.",
+        "select_record_print": "Select a record to preview / print",
+        "selected_receipt": "Selected receipt",
+        "saved_local_jpg": "Saved JPG to the local folder.",
+        "no_local_jpg": "No local JPG files yet.",
         "receipt_title": "Receipt",
         "tax_id_label": "Tax ID",
         "signature": "Signature",
@@ -211,9 +226,43 @@ def default_local_log_folder() -> str:
     return str(secret_value or os.environ.get("MOM_DR_LOG_FOLDER") or APP_DIR)
 
 
+def default_local_receipt_folder() -> str:
+    try:
+        secret_value = st.secrets.get("local_receipt_folder")
+    except Exception:
+        secret_value = None
+    return str(secret_value or os.environ.get("MOM_DR_RECEIPT_FOLDER") or (APP_DIR / LOCAL_RECEIPT_FOLDER_NAME))
+
+
 def local_log_path() -> Path:
     folder = st.session_state.get("local_log_folder", default_local_log_folder())
     return Path(str(folder)).expanduser() / LOCAL_LOG_FILENAME
+
+
+def local_receipt_folder() -> Path:
+    folder = st.session_state.get("local_receipt_folder", default_local_receipt_folder())
+    return Path(str(folder)).expanduser()
+
+
+def safe_receipt_filename(row: dict[str, Any]) -> str:
+    raw = str(row.get("receipt_no") or datetime.now().strftime("R%Y%m%d%H%M%S"))
+    safe = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in raw)
+    return f"{safe}.jpg"
+
+
+def save_local_receipt_jpg(row: dict[str, Any]) -> Path:
+    folder = local_receipt_folder()
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / safe_receipt_filename(row)
+    path.write_bytes(receipt_jpg_bytes(row))
+    return path
+
+
+def local_receipt_files() -> list[Path]:
+    folder = local_receipt_folder()
+    if not folder.exists():
+        return []
+    return sorted(folder.glob("*.jpg"), key=lambda path: path.stat().st_mtime, reverse=True)
 
 
 @st.cache_resource(show_spinner=False)
@@ -387,6 +436,49 @@ def merge_new_records(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.Data
 def records_csv_bytes(records: pd.DataFrame) -> bytes:
     normalized = normalize_records(records)
     return normalized.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+
+def row_to_dict(row: pd.Series) -> dict[str, Any]:
+    normalized = {header: row.get(header, "") for header in SHEET_HEADERS}
+    return normalized
+
+
+def record_option_label(index: int, row: pd.Series) -> str:
+    receipt_no = str(row.get("receipt_no", "")).strip() or f"#{index + 1}"
+    receipt_date = str(row.get("receipt_date", "")).strip()
+    item_name = str(row.get("item_name", "")).strip()
+    total = str(row.get("total", "")).strip()
+    parts = [receipt_no]
+    if receipt_date:
+        parts.append(receipt_date)
+    if item_name:
+        parts.append(item_name)
+    if total:
+        parts.append(f"NT$ {total}")
+    return " | ".join(parts)
+
+
+def selected_record_tools(records: pd.DataFrame, key_prefix: str) -> None:
+    normalized = normalize_records(records)
+    if normalized.empty:
+        return
+    options = list(range(len(normalized)))
+    selected_index = st.selectbox(
+        t("select_record_print"),
+        options,
+        format_func=lambda index: record_option_label(index, normalized.iloc[index]),
+        key=f"{key_prefix}_selected_record",
+    )
+    selected_row = row_to_dict(normalized.iloc[selected_index])
+    st.subheader(t("selected_receipt"))
+    st.markdown(receipt_html(selected_row), unsafe_allow_html=True)
+    st.download_button(
+        t("download_jpg"),
+        data=receipt_jpg_bytes(selected_row),
+        file_name=safe_receipt_filename(selected_row),
+        mime="image/jpeg",
+        key=f"{key_prefix}_download_jpg",
+    )
 
 
 def import_local_records(incoming: pd.DataFrame) -> int:
@@ -563,6 +655,8 @@ def main() -> None:
         st.session_state.language = "zh"
     if "local_log_folder" not in st.session_state:
         st.session_state.local_log_folder = default_local_log_folder()
+    if "local_receipt_folder" not in st.session_state:
+        st.session_state.local_receipt_folder = default_local_receipt_folder()
     styles()
 
     st.session_state.language = st.sidebar.radio(
@@ -635,7 +729,9 @@ def main() -> None:
 
         if submitted:
             target, maybe_error = append_record(row)
+            saved_jpg_path = save_local_receipt_jpg(row)
             st.success(t("saved"))
+            st.caption(f"{t('local_receipt_file')}: {saved_jpg_path}")
             if target == "google" and maybe_error:
                 st.link_button(t("sheet_link"), maybe_error)
 
@@ -668,6 +764,7 @@ def main() -> None:
             st.info(t("no_records"))
         else:
             st.dataframe(records.sort_values("created_at", ascending=False), use_container_width=True, hide_index=True)
+            selected_record_tools(records, "history")
             st.download_button(
                 t("download_records"),
                 data=records_csv_bytes(records),
@@ -684,6 +781,7 @@ def main() -> None:
             try:
                 uploaded_records = normalize_records(pd.read_csv(uploaded_records_file))
                 st.dataframe(uploaded_records, use_container_width=True, hide_index=True)
+                selected_record_tools(uploaded_records, "uploaded")
                 col_import_a, col_import_b = st.columns(2)
                 with col_import_a:
                     if st.button(t("import_local"), type="primary"):
@@ -718,11 +816,37 @@ def main() -> None:
             help=t("local_folder_help"),
         )
         st.caption(f"{t('local_log_file')}: {local_log_path()}")
+        st.text_input(
+            t("local_receipt_folder"),
+            key="local_receipt_folder",
+            help=t("local_folder_help"),
+        )
+        st.caption(f"{t('local_receipt_folder')}: {local_receipt_folder()}")
+        st.subheader(t("local_receipt_browse"))
+        jpg_files = local_receipt_files()
+        if not jpg_files:
+            st.info(t("no_local_jpg"))
+        else:
+            selected_file = st.selectbox(
+                t("local_receipt_browse"),
+                jpg_files,
+                format_func=lambda path: path.name,
+            )
+            st.caption(str(selected_file))
+            st.image(str(selected_file), use_container_width=True)
+            st.download_button(
+                t("download_jpg"),
+                data=selected_file.read_bytes(),
+                file_name=selected_file.name,
+                mime="image/jpeg",
+                key="saved_local_jpg_download",
+            )
         st.code(
             """
 share_with_email = "your-gmail@gmail.com"
 google_drive_folder_id = "optional-shared-folder-id"
 local_log_folder = "C:/Users/your-name/Documents/mom_dr_logs"
+local_receipt_folder = "C:/Users/your-name/Documents/mom_dr_receipts"
 
 [gcp_service_account]
 type = "service_account"
