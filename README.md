@@ -4,6 +4,7 @@
 
 - 可切換中文 / English
 - 可依照資料夾中的收據範例建立收據畫面
+- 可下載收據 JPG
 - 每次儲存會寫入 `mom_dr收據_log` Google 試算表
 - 尚未設定 Google 時，會先寫入本機 `mom_dr_receipt_log.csv`
 
@@ -19,7 +20,7 @@ streamlit run app.py
 1. 到 Google Cloud 建立一個 Project。
 2. 啟用 Google Sheets API 和 Google Drive API。
 3. 建立 Service Account，下載 JSON key。
-4. 把 JSON key 內容轉成 `.streamlit/secrets.toml` 格式，可參考 `.streamlit/secrets.toml.example`。
+4. 把 JSON key 內容轉成 `.streamlit/secrets.toml` 格式，可參考 `.streamlit/secrets.toml.example`。請使用實際 JSON key 的值，不要保留 `...`。
 5. 如果希望試算表出現在你的 Google Drive 資料夾：
    - 在 Google Drive 建立或選擇一個資料夾。
    - 把該資料夾分享給 service account 的 `client_email`，權限設為編輯者。

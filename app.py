@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from io import BytesIO
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageDraw, ImageFont
 
 try:
     import gspread
@@ -77,6 +79,9 @@ TEXT = {
         "local_csv": "本機 CSV",
         "google_sheet": "Google Sheets",
         "download_html": "下載收據 HTML",
+        "download_jpg": "下載收據 JPG",
+        "google_ready": "Google 已連動：儲存後會寫入 Google 試算表。",
+        "google_not_ready": "Google 尚未連動：目前只會寫入本機 CSV。",
         "receipt_title": "免用統一發票收據",
         "tax_id_label": "統一編號",
         "signature": "簽章",
@@ -118,6 +123,9 @@ TEXT = {
         "local_csv": "Local CSV",
         "google_sheet": "Google Sheets",
         "download_html": "Download receipt HTML",
+        "download_jpg": "Download receipt JPG",
+        "google_ready": "Google is connected. Saved receipts are written to Google Sheets.",
+        "google_not_ready": "Google is not connected. Records are saved only to a local CSV.",
         "receipt_title": "Receipt",
         "tax_id_label": "Tax ID",
         "signature": "Signature",
@@ -150,6 +158,18 @@ def get_secret_dict(name: str) -> dict[str, Any] | None:
     return dict(value)
 
 
+def get_config_secret(key: str, service_account_info: dict[str, Any] | None = None) -> str | None:
+    try:
+        value = st.secrets.get(key)
+    except Exception:
+        value = None
+    if value:
+        return str(value)
+    if service_account_info and service_account_info.get(key):
+        return str(service_account_info[key])
+    return None
+
+
 @st.cache_resource(show_spinner=False)
 def get_google_sheet() -> tuple[Any | None, str | None, str | None]:
     if gspread is None or Credentials is None:
@@ -159,30 +179,121 @@ def get_google_sheet() -> tuple[Any | None, str | None, str | None]:
     if not service_account_info:
         return None, None, None
 
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        credentials = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+        client = gspread.authorize(credentials)
+
+        spreadsheet = None
+        matches = client.openall(SHEET_NAME)
+        if matches:
+            spreadsheet = matches[0]
+        else:
+            folder_id = get_config_secret("google_drive_folder_id", service_account_info)
+            spreadsheet = client.create(SHEET_NAME, folder_id=folder_id)
+            share_with = get_config_secret("share_with_email", service_account_info)
+            if share_with:
+                spreadsheet.share(share_with, perm_type="user", role="writer")
+
+        worksheet = spreadsheet.sheet1
+        existing = worksheet.row_values(1)
+        if existing != SHEET_HEADERS:
+            worksheet.resize(rows=max(worksheet.row_count, 1000), cols=len(SHEET_HEADERS))
+            worksheet.update("A1", [SHEET_HEADERS])
+        return worksheet, spreadsheet.url, None
+    except Exception as exc:
+        return None, None, f"Google connection failed: {exc}"
+
+
+def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = [
+        "C:/Windows/Fonts/msjhbd.ttc" if bold else "C:/Windows/Fonts/msjh.ttc",
+        "C:/Windows/Fonts/mingliub.ttc" if bold else "C:/Windows/Fonts/mingliu.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
-    credentials = Credentials.from_service_account_info(service_account_info, scopes=scopes)
-    client = gspread.authorize(credentials)
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return ImageFont.truetype(candidate, size=size)
+    return ImageFont.load_default()
 
-    spreadsheet = None
-    matches = client.openall(SHEET_NAME)
-    if matches:
-        spreadsheet = matches[0]
-    else:
-        folder_id = st.secrets.get("google_drive_folder_id", None)
-        spreadsheet = client.create(SHEET_NAME, folder_id=folder_id)
-        share_with = st.secrets.get("share_with_email", None)
-        if share_with:
-            spreadsheet.share(share_with, perm_type="user", role="writer")
 
-    worksheet = spreadsheet.sheet1
-    existing = worksheet.row_values(1)
-    if existing != SHEET_HEADERS:
-        worksheet.resize(rows=max(worksheet.row_count, 1000), cols=len(SHEET_HEADERS))
-        worksheet.update("A1", [SHEET_HEADERS])
-    return worksheet, spreadsheet.url, None
+def draw_text(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: Any, font: ImageFont.ImageFont, fill: str = "#1f1b18") -> None:
+    draw.text(xy, str(text or ""), font=font, fill=fill)
+
+
+def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
+    labels = TEXT[st.session_state.language]
+    width, height = 1400, 900
+    margin = 70
+    image = Image.new("RGB", (width, height), "#fffdf7")
+    draw = ImageDraw.Draw(image)
+    title_font = load_font(42, bold=True)
+    head_font = load_font(25, bold=True)
+    body_font = load_font(24)
+    small_font = load_font(21)
+
+    border = "#2f2a25"
+    fill_head = "#f4ead8"
+    draw.rectangle((margin, 30, width - margin, height - 40), outline=border, width=2)
+
+    y = 85
+    draw_text(draw, (margin + 40, y), labels["receipt_title"], title_font)
+    draw_text(draw, (width - 330, y + 10), f"{labels['tax_id_label']}: {row['seller_tax_id']}", small_font)
+    y += 95
+    draw.line((margin + 40, y, width - margin - 40, y), fill=border, width=3)
+    y += 32
+    draw_text(draw, (margin + 40, y), f"{labels['receipt_no']}: {row['receipt_no']}", body_font)
+    draw_text(draw, (width - 430, y), f"{labels['receipt_date']}: {row['receipt_date']}", body_font)
+    y += 52
+    draw.line((margin + 40, y, width - margin - 40, y), fill=border, width=1)
+
+    y += 32
+    left_x = margin + 40
+    right_x = margin + 650
+    draw_text(draw, (left_x, y), labels["seller_name"], head_font)
+    draw_text(draw, (left_x, y + 42), row["seller_name"], body_font)
+    draw_text(draw, (right_x, y), labels["seller_address"], head_font)
+    draw_text(draw, (right_x, y + 42), row["seller_address"], body_font)
+    y += 92
+    draw_text(draw, (left_x, y), labels["seller_phone"], head_font)
+    draw_text(draw, (left_x, y + 42), row["seller_phone"], body_font)
+    draw_text(draw, (right_x, y), labels["buyer_name"], head_font)
+    draw_text(draw, (right_x, y + 42), row["buyer_name"], body_font)
+
+    table_x = margin + 40
+    table_y = y + 110
+    table_w = width - (margin + 40) * 2
+    row_h = 70
+    col_widths = [280, 180, 210, 220, table_w - 890]
+    headers = [labels["item_name"], labels["quantity"], labels["unit_price"], labels["amount"], labels["line_note"]]
+    values = [row["item_name"], row["quantity"], row["unit_price"], row["amount"], row["notes"]]
+    draw.rectangle((table_x, table_y, table_x + table_w, table_y + row_h), fill=fill_head, outline=border, width=2)
+    current_x = table_x
+    for index, col_w in enumerate(col_widths):
+        draw.rectangle((current_x, table_y, current_x + col_w, table_y + row_h * 4), outline=border, width=2)
+        draw_text(draw, (current_x + 18, table_y + 22), headers[index], head_font)
+        draw_text(draw, (current_x + 18, table_y + row_h + 22), values[index], body_font)
+        current_x += col_w
+    for line in range(1, 4):
+        draw.line((table_x, table_y + row_h * line, table_x + table_w, table_y + row_h * line), fill=border, width=2)
+
+    y = table_y + row_h * 4 + 65
+    total_text = f"{labels['grand_total']}: {row['total']}"
+    total_box = draw.textbbox((0, 0), total_text, font=title_font)
+    draw_text(draw, (width - margin - 40 - (total_box[2] - total_box[0]), y), total_text, title_font)
+    y += 85
+    sign_text = f"{labels['signature']}: ____________________"
+    sign_box = draw.textbbox((0, 0), sign_text, font=small_font)
+    draw_text(draw, (width - margin - 40 - (sign_box[2] - sign_box[0]), y), sign_text, small_font)
+
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=95)
+    return output.getvalue()
 
 
 def append_local(row: dict[str, Any]) -> None:
@@ -416,10 +527,10 @@ def main() -> None:
         html = receipt_html(row)
         st.markdown(html, unsafe_allow_html=True)
         st.download_button(
-            t("download_html"),
-            data=f"<!doctype html><html><head><meta charset='utf-8'></head><body>{html}</body></html>",
-            file_name=f"{receipt_no or 'receipt'}.html",
-            mime="text/html",
+            t("download_jpg"),
+            data=receipt_jpg_bytes(row),
+            file_name=f"{receipt_no or 'receipt'}.jpg",
+            mime="image/jpeg",
         )
 
     with history_tab:
@@ -435,9 +546,17 @@ def main() -> None:
         connection = t("google_sheet") if worksheet is not None else t("local_csv")
         st.metric(t("connection"), connection)
         if sheet_url:
+            st.success(t("google_ready"))
             st.write(sheet_url)
+        else:
+            st.warning(t("google_not_ready"))
+            if error:
+                st.caption(error)
         st.code(
             """
+share_with_email = "your-gmail@gmail.com"
+google_drive_folder_id = "optional-shared-folder-id"
+
 [gcp_service_account]
 type = "service_account"
 project_id = "..."
@@ -446,9 +565,6 @@ private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
 client_email = "your-service-account@project.iam.gserviceaccount.com"
 client_id = "..."
 token_uri = "https://oauth2.googleapis.com/token"
-
-share_with_email = "your-gmail@gmail.com"
-google_drive_folder_id = "optional-shared-folder-id"
 """.strip(),
             language="toml",
         )
