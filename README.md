@@ -8,6 +8,7 @@
 - 每次儲存會寫入 `mom_dr收據_log` Google 試算表
 - 尚未設定 Google 時，會先寫入本機 `mom_dr_receipt_log.csv`
 - 本機執行時可指定紀錄資料夾，讀取該資料夾內的 `mom_dr_receipt_log.csv`
+- 可下載全部紀錄 CSV 備份，也可上傳 CSV 把紀錄匯回本機或 Google Sheets
 
 ## 本機執行
 
@@ -49,6 +50,12 @@ local_log_folder = "C:/Users/your-name/Documents/mom_dr_logs"
 ```
 
 注意：部署到 Streamlit Community Cloud 後，雲端 app 不能直接讀取你 Windows 電腦上的 `C:/...` 資料夾；雲端長期紀錄請使用 Google Sheets。
+
+## 紀錄備份與還原
+
+在「紀錄」分頁可以下載目前紀錄 CSV。若資料不見或換電腦，可以在同一個分頁上傳先前下載的 CSV，然後選擇匯入到本機 CSV 或 Google 試算表。
+
+匯入時會用 `created_at + receipt_no` 判斷重複資料，已存在的紀錄不會重複加入。
 
 ## 部署到 Streamlit Community Cloud
 

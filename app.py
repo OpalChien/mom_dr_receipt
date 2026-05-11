@@ -90,6 +90,15 @@ TEXT = {
         "google_records": "Google 試算表",
         "local_records": "本機 CSV",
         "local_read_error": "讀取本機 CSV 失敗",
+        "backup_restore": "備份 / 載入紀錄",
+        "download_records": "下載目前紀錄 CSV",
+        "upload_records": "載入紀錄 CSV",
+        "uploaded_preview": "載入的紀錄預覽",
+        "import_local": "匯入到本機 CSV",
+        "import_google": "匯入到 Google 試算表",
+        "imported": "已匯入 {count} 筆新紀錄。",
+        "no_new_records": "沒有新紀錄需要匯入。",
+        "invalid_csv": "CSV 格式不正確，請上傳由本工具下載的紀錄檔。",
         "receipt_title": "免用統一發票收據",
         "tax_id_label": "統一編號",
         "signature": "簽章",
@@ -141,6 +150,15 @@ TEXT = {
         "google_records": "Google Sheet",
         "local_records": "Local CSV",
         "local_read_error": "Failed to read local CSV",
+        "backup_restore": "Backup / load records",
+        "download_records": "Download current records CSV",
+        "upload_records": "Load records CSV",
+        "uploaded_preview": "Loaded records preview",
+        "import_local": "Import to local CSV",
+        "import_google": "Import to Google Sheet",
+        "imported": "Imported {count} new records.",
+        "no_new_records": "No new records to import.",
+        "invalid_csv": "Invalid CSV. Please upload a record file downloaded from this tool.",
         "receipt_title": "Receipt",
         "tax_id_label": "Tax ID",
         "signature": "Signature",
@@ -333,6 +351,66 @@ def append_local(row: dict[str, Any]) -> None:
         if not exists:
             writer.writeheader()
         writer.writerow(row)
+
+
+def normalize_records(records: pd.DataFrame) -> pd.DataFrame:
+    if records.empty:
+        return pd.DataFrame(columns=SHEET_HEADERS)
+    normalized = records.copy()
+    for header in SHEET_HEADERS:
+        if header not in normalized.columns:
+            normalized[header] = ""
+    normalized = normalized[SHEET_HEADERS].fillna("")
+    for header in SHEET_HEADERS:
+        normalized[header] = normalized[header].astype(str)
+    return normalized
+
+
+def record_key(row: pd.Series) -> str:
+    receipt_no = str(row.get("receipt_no", "")).strip()
+    created_at = str(row.get("created_at", "")).strip()
+    if receipt_no or created_at:
+        return f"{created_at}|{receipt_no}"
+    return "|".join(str(row.get(header, "")).strip() for header in SHEET_HEADERS)
+
+
+def merge_new_records(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+    existing = normalize_records(existing)
+    incoming = normalize_records(incoming)
+    existing_keys = set(existing.apply(record_key, axis=1)) if not existing.empty else set()
+    new_rows = incoming[~incoming.apply(record_key, axis=1).isin(existing_keys)]
+    if new_rows.empty:
+        return pd.DataFrame(columns=SHEET_HEADERS)
+    return new_rows
+
+
+def records_csv_bytes(records: pd.DataFrame) -> bytes:
+    normalized = normalize_records(records)
+    return normalized.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+
+def import_local_records(incoming: pd.DataFrame) -> int:
+    existing, _ = read_local()
+    new_rows = merge_new_records(existing, incoming)
+    if new_rows.empty:
+        return 0
+    path = local_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged = pd.concat([normalize_records(existing), new_rows], ignore_index=True)
+    merged.to_csv(path, index=False, encoding="utf-8-sig")
+    return len(new_rows)
+
+
+def import_google_records(incoming: pd.DataFrame) -> int:
+    worksheet, _, _ = get_google_sheet()
+    if worksheet is None:
+        return 0
+    existing = pd.DataFrame(worksheet.get_all_records(), columns=SHEET_HEADERS)
+    new_rows = merge_new_records(existing, incoming)
+    if new_rows.empty:
+        return 0
+    worksheet.append_rows(new_rows[SHEET_HEADERS].values.tolist(), value_input_option="USER_ENTERED")
+    return len(new_rows)
 
 
 def read_local() -> tuple[pd.DataFrame, str | None]:
@@ -590,8 +668,39 @@ def main() -> None:
             st.info(t("no_records"))
         else:
             st.dataframe(records.sort_values("created_at", ascending=False), use_container_width=True, hide_index=True)
+            st.download_button(
+                t("download_records"),
+                data=records_csv_bytes(records),
+                file_name=f"mom_dr_receipt_log_{date.today().isoformat()}.csv",
+                mime="text/csv",
+            )
         if records_url:
             st.link_button(t("sheet_link"), records_url)
+
+        st.divider()
+        st.subheader(t("backup_restore"))
+        uploaded_records_file = st.file_uploader(t("upload_records"), type=["csv"])
+        if uploaded_records_file is not None:
+            try:
+                uploaded_records = normalize_records(pd.read_csv(uploaded_records_file))
+                st.dataframe(uploaded_records, use_container_width=True, hide_index=True)
+                col_import_a, col_import_b = st.columns(2)
+                with col_import_a:
+                    if st.button(t("import_local"), type="primary"):
+                        count = import_local_records(uploaded_records)
+                        if count:
+                            st.success(t("imported").format(count=count))
+                        else:
+                            st.info(t("no_new_records"))
+                with col_import_b:
+                    if worksheet is not None and st.button(t("import_google")):
+                        count = import_google_records(uploaded_records)
+                        if count:
+                            st.success(t("imported").format(count=count))
+                        else:
+                            st.info(t("no_new_records"))
+            except Exception as exc:
+                st.error(f"{t('invalid_csv')} ({exc})")
 
     with settings_tab:
         connection = t("google_sheet") if worksheet is not None else t("local_csv")
