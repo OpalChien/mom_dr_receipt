@@ -7,6 +7,7 @@
 - 可下載收據 JPG
 - 每次儲存會寫入 `mom_dr收據_log` Google 試算表
 - 尚未設定 Google 時，會先寫入本機 `mom_dr_receipt_log.csv`
+- 本機執行時可指定紀錄資料夾，讀取該資料夾內的 `mom_dr_receipt_log.csv`
 
 ## 本機執行
 
@@ -26,6 +27,28 @@ streamlit run app.py
    - 把該資料夾分享給 service account 的 `client_email`，權限設為編輯者。
    - 把資料夾網址裡的 folder id 填到 `google_drive_folder_id`。
 6. 把 `share_with_email` 填成你的 Gmail，app 第一次建立 `mom_dr收據_log` 時會把試算表分享給你。
+
+## 本機紀錄資料夾
+
+如果你在自己的電腦上執行 app，可以在「連線狀態」分頁填入本機資料夾路徑，例如：
+
+```text
+C:/Users/your-name/Documents/mom_dr_logs
+```
+
+app 會讀寫這個檔案：
+
+```text
+C:/Users/your-name/Documents/mom_dr_logs/mom_dr_receipt_log.csv
+```
+
+也可以在 Streamlit secrets 裡設定：
+
+```toml
+local_log_folder = "C:/Users/your-name/Documents/mom_dr_logs"
+```
+
+注意：部署到 Streamlit Community Cloud 後，雲端 app 不能直接讀取你 Windows 電腦上的 `C:/...` 資料夾；雲端長期紀錄請使用 Google Sheets。
 
 ## 部署到 Streamlit Community Cloud
 

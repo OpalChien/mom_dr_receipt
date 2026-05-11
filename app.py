@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from io import BytesIO
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -21,7 +22,7 @@ except ImportError:  # Lets the app show a helpful setup message instead of cras
 
 
 APP_DIR = Path(__file__).parent
-LOCAL_LOG_PATH = APP_DIR / "mom_dr_receipt_log.csv"
+LOCAL_LOG_FILENAME = "mom_dr_receipt_log.csv"
 SHEET_NAME = "mom_dr收據_log"
 SHEET_HEADERS = [
     "created_at",
@@ -82,6 +83,13 @@ TEXT = {
         "download_jpg": "下載收據 JPG",
         "google_ready": "Google 已連動：儲存後會寫入 Google 試算表。",
         "google_not_ready": "Google 尚未連動：目前只會寫入本機 CSV。",
+        "local_log_folder": "本機紀錄資料夾路徑",
+        "local_log_file": "目前本機紀錄檔",
+        "local_folder_help": "本機執行時可讀寫這個資料夾；Streamlit Cloud 不能直接讀你的 Windows 電腦資料夾。",
+        "record_source": "紀錄來源",
+        "google_records": "Google 試算表",
+        "local_records": "本機 CSV",
+        "local_read_error": "讀取本機 CSV 失敗",
         "receipt_title": "免用統一發票收據",
         "tax_id_label": "統一編號",
         "signature": "簽章",
@@ -126,6 +134,13 @@ TEXT = {
         "download_jpg": "Download receipt JPG",
         "google_ready": "Google is connected. Saved receipts are written to Google Sheets.",
         "google_not_ready": "Google is not connected. Records are saved only to a local CSV.",
+        "local_log_folder": "Local log folder path",
+        "local_log_file": "Current local log file",
+        "local_folder_help": "When running locally, the app can read and write this folder. Streamlit Cloud cannot directly read folders on your Windows computer.",
+        "record_source": "Record source",
+        "google_records": "Google Sheet",
+        "local_records": "Local CSV",
+        "local_read_error": "Failed to read local CSV",
         "receipt_title": "Receipt",
         "tax_id_label": "Tax ID",
         "signature": "Signature",
@@ -168,6 +183,19 @@ def get_config_secret(key: str, service_account_info: dict[str, Any] | None = No
     if service_account_info and service_account_info.get(key):
         return str(service_account_info[key])
     return None
+
+
+def default_local_log_folder() -> str:
+    try:
+        secret_value = st.secrets.get("local_log_folder")
+    except Exception:
+        secret_value = None
+    return str(secret_value or os.environ.get("MOM_DR_LOG_FOLDER") or APP_DIR)
+
+
+def local_log_path() -> Path:
+    folder = st.session_state.get("local_log_folder", default_local_log_folder())
+    return Path(str(folder)).expanduser() / LOCAL_LOG_FILENAME
 
 
 @st.cache_resource(show_spinner=False)
@@ -297,18 +325,24 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
 
 
 def append_local(row: dict[str, Any]) -> None:
-    exists = LOCAL_LOG_PATH.exists()
-    with LOCAL_LOG_PATH.open("a", newline="", encoding="utf-8-sig") as file:
+    path = local_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists()
+    with path.open("a", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=SHEET_HEADERS)
         if not exists:
             writer.writeheader()
         writer.writerow(row)
 
 
-def read_local() -> pd.DataFrame:
-    if not LOCAL_LOG_PATH.exists():
-        return pd.DataFrame(columns=SHEET_HEADERS)
-    return pd.read_csv(LOCAL_LOG_PATH)
+def read_local() -> tuple[pd.DataFrame, str | None]:
+    path = local_log_path()
+    if not path.exists():
+        return pd.DataFrame(columns=SHEET_HEADERS), None
+    try:
+        return pd.read_csv(path), None
+    except Exception as exc:
+        return pd.DataFrame(columns=SHEET_HEADERS), str(exc)
 
 
 def append_record(row: dict[str, Any]) -> tuple[str, str | None]:
@@ -324,7 +358,8 @@ def append_record(row: dict[str, Any]) -> tuple[str, str | None]:
 def read_records() -> tuple[pd.DataFrame, str | None]:
     worksheet, sheet_url, _ = get_google_sheet()
     if worksheet is None:
-        return read_local(), None
+        records, _ = read_local()
+        return records, None
     values = worksheet.get_all_records()
     return pd.DataFrame(values, columns=SHEET_HEADERS), sheet_url
 
@@ -448,6 +483,8 @@ def main() -> None:
     st.set_page_config(page_title="mom_dr receipt log", layout="wide")
     if "language" not in st.session_state:
         st.session_state.language = "zh"
+    if "local_log_folder" not in st.session_state:
+        st.session_state.local_log_folder = default_local_log_folder()
     styles()
 
     st.session_state.language = st.sidebar.radio(
@@ -534,7 +571,21 @@ def main() -> None:
         )
 
     with history_tab:
-        records, records_url = read_records()
+        source_options = ["google", "local"] if worksheet is not None else ["local"]
+        record_source = st.radio(
+            t("record_source"),
+            source_options,
+            format_func=lambda value: t("google_records") if value == "google" else t("local_records"),
+            horizontal=True,
+        )
+        if record_source == "google":
+            records, records_url = read_records()
+            local_error = None
+        else:
+            records, local_error = read_local()
+            records_url = None
+            if local_error:
+                st.error(f"{t('local_read_error')}: {local_error}")
         if records.empty:
             st.info(t("no_records"))
         else:
@@ -552,10 +603,17 @@ def main() -> None:
             st.warning(t("google_not_ready"))
             if error:
                 st.caption(error)
+        st.text_input(
+            t("local_log_folder"),
+            key="local_log_folder",
+            help=t("local_folder_help"),
+        )
+        st.caption(f"{t('local_log_file')}: {local_log_path()}")
         st.code(
             """
 share_with_email = "your-gmail@gmail.com"
 google_drive_folder_id = "optional-shared-folder-id"
+local_log_folder = "C:/Users/your-name/Documents/mom_dr_logs"
 
 [gcp_service_account]
 type = "service_account"
