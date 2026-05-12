@@ -5,6 +5,7 @@
 - 可切換中文 / English
 - 可依照資料夾中的收據範例建立收據畫面
 - 可下載收據 JPG
+- 明細可新增多筆品項，會自動換算每列金額與合計
 - 每次儲存會寫入 `mom_dr收據_log` Google 試算表
 - 尚未設定 Google 時，會先寫入本機 `mom_dr_receipt_log.csv`
 - 本機執行時可指定紀錄資料夾，讀取該資料夾內的 `mom_dr_receipt_log.csv`

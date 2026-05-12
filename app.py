@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import html as html_lib
 import json
 import os
 from io import BytesIO
@@ -42,6 +43,7 @@ SHEET_HEADERS = [
     "notes",
     "total",
     "sheet_url",
+    "items_json",
 ]
 DEFAULT_VENDOR = {
     "zh": {
@@ -208,6 +210,92 @@ def money(value: Any) -> Decimal:
         return Decimal("0")
 
 
+def money_text(value: Any) -> str:
+    return f"{money(value):.0f}"
+
+
+def default_line_items() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"item_name": "", "quantity": 1.0, "unit_price": 0.0, "amount": 0.0, "notes": ""},
+        ]
+    )
+
+
+def calculate_line_items(items: pd.DataFrame) -> pd.DataFrame:
+    if items is None or items.empty:
+        items = default_line_items()
+    calculated = items.copy()
+    for column in ["item_name", "quantity", "unit_price", "amount", "notes"]:
+        if column not in calculated.columns:
+            calculated[column] = "" if column in ["item_name", "notes"] else 0.0
+    calculated["quantity"] = pd.to_numeric(calculated["quantity"], errors="coerce").fillna(0)
+    calculated["unit_price"] = pd.to_numeric(calculated["unit_price"], errors="coerce").fillna(0)
+    calculated["amount"] = calculated["quantity"] * calculated["unit_price"]
+    calculated["item_name"] = calculated["item_name"].fillna("").astype(str)
+    calculated["notes"] = calculated["notes"].fillna("").astype(str)
+    keep = (calculated["item_name"].str.strip() != "") | (calculated["quantity"] != 0) | (calculated["unit_price"] != 0) | (calculated["notes"].str.strip() != "")
+    calculated = calculated[keep]
+    if calculated.empty:
+        return default_line_items()
+    return calculated[["item_name", "quantity", "unit_price", "amount", "notes"]].reset_index(drop=True)
+
+
+def line_items_total(items: pd.DataFrame) -> Decimal:
+    calculated = calculate_line_items(items)
+    total = Decimal("0")
+    for value in calculated["amount"]:
+        total += money(value)
+    return total
+
+
+def items_to_json(items: pd.DataFrame) -> str:
+    calculated = calculate_line_items(items)
+    payload = []
+    for item in calculated.to_dict("records"):
+        payload.append(
+            {
+                "item_name": item.get("item_name", ""),
+                "quantity": float(item.get("quantity") or 0),
+                "unit_price": float(item.get("unit_price") or 0),
+                "amount": float(item.get("amount") or 0),
+                "notes": item.get("notes", ""),
+            }
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def items_from_row(row: dict[str, Any]) -> pd.DataFrame:
+    raw_items = str(row.get("items_json", "") or "").strip()
+    if raw_items:
+        try:
+            parsed = json.loads(raw_items)
+            if isinstance(parsed, list):
+                return calculate_line_items(pd.DataFrame(parsed))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return calculate_line_items(
+        pd.DataFrame(
+            [
+                {
+                    "item_name": row.get("item_name", ""),
+                    "quantity": row.get("quantity", 0),
+                    "unit_price": row.get("unit_price", 0),
+                    "amount": row.get("amount", 0),
+                    "notes": row.get("notes", ""),
+                }
+            ]
+        )
+    )
+
+
+def row_item_summary(items: pd.DataFrame, column: str) -> str:
+    calculated = calculate_line_items(items)
+    if column == "amount":
+        return "\n".join(money_text(value) for value in calculated[column])
+    return "\n".join(str(value) for value in calculated[column])
+
+
 def get_secret_dict(name: str) -> dict[str, Any] | None:
     try:
         value = st.secrets.get(name)
@@ -337,6 +425,7 @@ def draw_text(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: Any, font: I
 
 def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     labels = TEXT[st.session_state.language]
+    items = items_from_row(row)
     width, height = 1400, 900
     margin = 70
     image = Image.new("RGB", (width, height), "#fffdf7")
@@ -377,21 +466,33 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     table_x = margin + 40
     table_y = y + 110
     table_w = width - (margin + 40) * 2
-    row_h = 70
+    row_h = 62
     col_widths = [280, 180, 210, 220, table_w - 890]
     headers = [labels["item_name"], labels["quantity"], labels["unit_price"], labels["amount"], labels["line_note"]]
-    values = [row["item_name"], row["quantity"], row["unit_price"], row["amount"], row["notes"]]
     draw.rectangle((table_x, table_y, table_x + table_w, table_y + row_h), fill=fill_head, outline=border, width=2)
     current_x = table_x
+    visible_rows = max(4, len(items))
+    table_rows = visible_rows + 1
     for index, col_w in enumerate(col_widths):
-        draw.rectangle((current_x, table_y, current_x + col_w, table_y + row_h * 4), outline=border, width=2)
+        draw.rectangle((current_x, table_y, current_x + col_w, table_y + row_h * table_rows), outline=border, width=2)
         draw_text(draw, (current_x + 18, table_y + 22), headers[index], head_font)
-        draw_text(draw, (current_x + 18, table_y + row_h + 22), values[index], body_font)
         current_x += col_w
-    for line in range(1, 4):
+    for row_index, item in items.iterrows():
+        values = [
+            item["item_name"],
+            item["quantity"],
+            item["unit_price"],
+            money_text(item["amount"]),
+            item["notes"],
+        ]
+        current_x = table_x
+        for index, col_w in enumerate(col_widths):
+            draw_text(draw, (current_x + 18, table_y + row_h * (row_index + 1) + 20), values[index], small_font)
+            current_x += col_w
+    for line in range(1, table_rows):
         draw.line((table_x, table_y + row_h * line, table_x + table_w, table_y + row_h * line), fill=border, width=2)
 
-    y = table_y + row_h * 4 + 65
+    y = table_y + row_h * table_rows + 65
     total_text = f"{labels['grand_total']}: {row['total']}"
     total_box = draw.textbbox((0, 0), total_text, font=title_font)
     draw_text(draw, (width - margin - 40 - (total_box[2] - total_box[0]), y), total_text, title_font)
@@ -551,6 +652,19 @@ def read_records() -> tuple[pd.DataFrame, str | None]:
 def receipt_html(row: dict[str, Any]) -> str:
     lang = st.session_state.language
     labels = TEXT[lang]
+    items = items_from_row(row)
+    item_rows = "\n".join(
+        f"""
+      <tr>
+        <td>{html_lib.escape(str(item["item_name"]))}</td>
+        <td>{html_lib.escape(str(item["quantity"]))}</td>
+        <td>{html_lib.escape(str(item["unit_price"]))}</td>
+        <td>{money_text(item["amount"])}</td>
+        <td>{html_lib.escape(str(item["notes"]))}</td>
+      </tr>"""
+        for _, item in items.iterrows()
+    )
+    empty_rows = "\n".join("<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>" for _ in range(max(0, 3 - len(items))))
     return f"""
 <section class="receipt-paper">
   <div class="receipt-top">
@@ -578,15 +692,8 @@ def receipt_html(row: dict[str, Any]) -> str:
       </tr>
     </thead>
     <tbody>
-      <tr>
-        <td>{row["item_name"]}</td>
-        <td>{row["quantity"]}</td>
-        <td>{row["unit_price"]}</td>
-        <td>{row["amount"]}</td>
-        <td>{row["notes"]}</td>
-      </tr>
-      <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>
-      <tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>
+{item_rows}
+{empty_rows}
     </tbody>
   </table>
   <div class="receipt-total">{labels["grand_total"]}: {row["total"]}</div>
@@ -671,6 +778,8 @@ def main() -> None:
         st.session_state.local_log_folder = default_local_log_folder()
     if "local_receipt_folder" not in st.session_state:
         st.session_state.local_receipt_folder = default_local_receipt_folder()
+    if "line_items" not in st.session_state:
+        st.session_state.line_items = default_line_items()
     styles()
 
     st.session_state.language = st.sidebar.radio(
@@ -694,53 +803,62 @@ def main() -> None:
 
     with receipt_tab:
         st.caption(t("print_hint"))
-        with st.form("receipt_form", clear_on_submit=False):
-            default_vendor = DEFAULT_VENDOR[st.session_state.language]
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.subheader(t("receipt_info"))
-                receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m%d"))
-                receipt_date = st.date_input(t("receipt_date"), value=date.today())
-                buyer_name = st.text_input(t("buyer_name"), value="")
-            with col_b:
-                st.subheader(t("seller_info"))
-                seller_name = st.text_input(t("seller_name"), value=default_vendor["seller_name"])
-                seller_tax_id = st.text_input(t("seller_tax_id"), value=default_vendor["seller_tax_id"])
-                seller_address = st.text_input(t("seller_address"), value=default_vendor["seller_address"])
-                seller_phone = st.text_input(t("seller_phone"), value=default_vendor["seller_phone"])
+        default_vendor = DEFAULT_VENDOR[st.session_state.language]
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.subheader(t("receipt_info"))
+            receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m%d"))
+            receipt_date = st.date_input(t("receipt_date"), value=date.today())
+            buyer_name = st.text_input(t("buyer_name"), value="")
+        with col_b:
+            st.subheader(t("seller_info"))
+            seller_name = st.text_input(t("seller_name"), value=default_vendor["seller_name"])
+            seller_tax_id = st.text_input(t("seller_tax_id"), value=default_vendor["seller_tax_id"])
+            seller_address = st.text_input(t("seller_address"), value=default_vendor["seller_address"])
+            seller_phone = st.text_input(t("seller_phone"), value=default_vendor["seller_phone"])
 
-            st.subheader(t("items"))
-            col_1, col_2, col_3, col_4 = st.columns([3, 1, 1, 1])
-            with col_1:
-                item_name = st.text_input(t("item_name"))
-            with col_2:
-                quantity = st.number_input(t("quantity"), min_value=0.0, value=1.0, step=1.0)
-            with col_3:
-                unit_price = st.number_input(t("unit_price"), min_value=0.0, value=0.0, step=1.0)
-            amount = money(quantity) * money(unit_price)
-            with col_4:
-                st.metric(t("amount"), f"{amount:,.0f}")
-            notes = st.text_area(t("notes"), height=90)
+        st.subheader(t("items"))
+        edited_items = st.data_editor(
+            st.session_state.line_items,
+            num_rows="dynamic",
+            width="stretch",
+            hide_index=True,
+            column_order=["item_name", "quantity", "unit_price", "amount", "notes"],
+            disabled=["amount"],
+            column_config={
+                "item_name": st.column_config.TextColumn(t("item_name"), width="large"),
+                "quantity": st.column_config.NumberColumn(t("quantity"), min_value=0.0, step=1.0, format="%.2f"),
+                "unit_price": st.column_config.NumberColumn(t("unit_price"), min_value=0.0, step=1.0, format="%.0f"),
+                "amount": st.column_config.NumberColumn(t("amount"), disabled=True, format="%.0f"),
+                "notes": st.column_config.TextColumn(t("notes"), width="medium"),
+            },
+            key="items_editor",
+        )
+        line_items = calculate_line_items(edited_items)
+        st.session_state.line_items = line_items
+        total = line_items_total(line_items)
+        st.metric(t("total"), f"{total:,.0f}")
 
-            row = {
-                "created_at": datetime.now().isoformat(timespec="seconds"),
-                "receipt_no": receipt_no,
-                "language": st.session_state.language,
-                "receipt_date": receipt_date.isoformat(),
-                "seller_name": seller_name,
-                "seller_tax_id": seller_tax_id,
-                "seller_address": seller_address,
-                "seller_phone": seller_phone,
-                "buyer_name": buyer_name,
-                "item_name": item_name,
-                "quantity": quantity,
-                "unit_price": unit_price,
-                "amount": f"{amount:.0f}",
-                "notes": notes,
-                "total": f"{amount:.0f}",
-                "sheet_url": sheet_url or "",
-            }
-            submitted = st.form_submit_button(t("save"), type="primary")
+        row = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "receipt_no": receipt_no,
+            "language": st.session_state.language,
+            "receipt_date": receipt_date.isoformat(),
+            "seller_name": seller_name,
+            "seller_tax_id": seller_tax_id,
+            "seller_address": seller_address,
+            "seller_phone": seller_phone,
+            "buyer_name": buyer_name,
+            "item_name": row_item_summary(line_items, "item_name"),
+            "quantity": row_item_summary(line_items, "quantity"),
+            "unit_price": row_item_summary(line_items, "unit_price"),
+            "amount": row_item_summary(line_items, "amount"),
+            "notes": row_item_summary(line_items, "notes"),
+            "items_json": items_to_json(line_items),
+            "total": f"{total:.0f}",
+            "sheet_url": sheet_url or "",
+        }
+        submitted = st.button(t("save"), type="primary")
 
         if submitted:
             target, maybe_error = append_record(row)
@@ -778,7 +896,7 @@ def main() -> None:
         if records.empty:
             st.info(t("no_records"))
         else:
-            st.dataframe(records.sort_values("created_at", ascending=False), use_container_width=True, hide_index=True)
+            st.dataframe(records.sort_values("created_at", ascending=False), width="stretch", hide_index=True)
             selected_record_tools(records, "history")
             st.download_button(
                 t("download_records"),
@@ -795,7 +913,7 @@ def main() -> None:
         if uploaded_records_file is not None:
             try:
                 uploaded_records = normalize_records(pd.read_csv(uploaded_records_file))
-                st.dataframe(uploaded_records, use_container_width=True, hide_index=True)
+                st.dataframe(uploaded_records, width="stretch", hide_index=True)
                 selected_record_tools(uploaded_records, "uploaded")
                 col_import_a, col_import_b = st.columns(2)
                 with col_import_a:
@@ -848,7 +966,7 @@ def main() -> None:
                 format_func=lambda path: path.name,
             )
             st.caption(str(selected_file))
-            st.image(str(selected_file), use_container_width=True)
+            st.image(str(selected_file), width="stretch")
             st.download_button(
                 t("download_jpg"),
                 data=selected_file.read_bytes(),
