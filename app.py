@@ -43,6 +43,20 @@ SHEET_HEADERS = [
     "total",
     "sheet_url",
 ]
+DEFAULT_VENDOR = {
+    "zh": {
+        "seller_name": "誠品診所",
+        "seller_tax_id": "97974582",
+        "seller_address": "106臺北市大安區敦安里敦化南路1段317號",
+        "seller_phone": "",
+    },
+    "en": {
+        "seller_name": "Cheng Pin Clinic",
+        "seller_tax_id": "97974582",
+        "seller_address": "No. 317, Sec. 1, Dunhua S. Rd., Da'an Dist., Taipei City 106, Taiwan",
+        "seller_phone": "",
+    },
+}
 
 
 TEXT = {
@@ -681,18 +695,19 @@ def main() -> None:
     with receipt_tab:
         st.caption(t("print_hint"))
         with st.form("receipt_form", clear_on_submit=False):
+            default_vendor = DEFAULT_VENDOR[st.session_state.language]
             col_a, col_b = st.columns(2)
             with col_a:
                 st.subheader(t("receipt_info"))
-                receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("R%Y%m%d%H%M"))
+                receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m"))
                 receipt_date = st.date_input(t("receipt_date"), value=date.today())
-                buyer_name = st.text_input(t("buyer_name"), value="mom_dr")
+                buyer_name = st.text_input(t("buyer_name"), value="")
             with col_b:
                 st.subheader(t("seller_info"))
-                seller_name = st.text_input(t("seller_name"))
-                seller_tax_id = st.text_input(t("seller_tax_id"))
-                seller_address = st.text_input(t("seller_address"))
-                seller_phone = st.text_input(t("seller_phone"))
+                seller_name = st.text_input(t("seller_name"), value=default_vendor["seller_name"])
+                seller_tax_id = st.text_input(t("seller_tax_id"), value=default_vendor["seller_tax_id"])
+                seller_address = st.text_input(t("seller_address"), value=default_vendor["seller_address"])
+                seller_phone = st.text_input(t("seller_phone"), value=default_vendor["seller_phone"])
 
             st.subheader(t("items"))
             col_1, col_2, col_3, col_4 = st.columns([3, 1, 1, 1])
