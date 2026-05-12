@@ -699,7 +699,7 @@ def main() -> None:
             col_a, col_b = st.columns(2)
             with col_a:
                 st.subheader(t("receipt_info"))
-                receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m"))
+                receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m%d"))
                 receipt_date = st.date_input(t("receipt_date"), value=date.today())
                 buyer_name = st.text_input(t("buyer_name"), value="")
             with col_b:
