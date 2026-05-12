@@ -300,6 +300,67 @@ def row_item_summary(items: pd.DataFrame, column: str) -> str:
     return "\n".join(str(value) for value in calculated[column])
 
 
+def current_input_line_items() -> pd.DataFrame:
+    item_name = str(st.session_state.get("new_item_name", "") or "")
+    quantity = st.session_state.get("new_quantity", 0.0)
+    unit_price = st.session_state.get("new_unit_price", 0.0)
+    notes = str(st.session_state.get("new_notes", "") or "")
+    has_content = item_name.strip() or notes.strip() or money(quantity) != 0 or money(unit_price) != 0
+    if not has_content:
+        return default_line_items()
+    return calculate_line_items(
+        pd.DataFrame(
+            [
+                {
+                    "item_name": item_name,
+                    "quantity": quantity,
+                    "unit_price": unit_price,
+                    "notes": notes,
+                }
+            ]
+        )
+    )
+
+
+def all_visible_line_items() -> pd.DataFrame:
+    return calculate_line_items(pd.concat([st.session_state.line_items, current_input_line_items()], ignore_index=True))
+
+
+def add_current_item_to_list() -> None:
+    draft = current_input_line_items()
+    if not draft.empty:
+        st.session_state.line_items = calculate_line_items(pd.concat([st.session_state.line_items, draft], ignore_index=True))
+    st.session_state.new_item_name = ""
+    st.session_state.new_quantity = 1.0
+    st.session_state.new_unit_price = 0.0
+    st.session_state.new_notes = ""
+
+
+def clear_line_items() -> None:
+    st.session_state.line_items = default_line_items()
+    st.session_state.new_item_name = ""
+    st.session_state.new_quantity = 1.0
+    st.session_state.new_unit_price = 0.0
+    st.session_state.new_notes = ""
+
+
+def display_line_items(items: pd.DataFrame) -> pd.DataFrame:
+    labels = TEXT[st.session_state.language]
+    displayed = calculate_line_items(items).copy()
+    if displayed.empty:
+        return displayed
+    displayed["amount"] = displayed["amount"].map(money_text)
+    return displayed.rename(
+        columns={
+            "item_name": labels["item_name"],
+            "quantity": labels["quantity"],
+            "unit_price": labels["unit_price"],
+            "amount": labels["amount"],
+            "notes": labels["notes"],
+        }
+    )
+
+
 def get_secret_dict(name: str) -> dict[str, Any] | None:
     try:
         value = st.secrets.get(name)
@@ -835,28 +896,15 @@ def main() -> None:
 
         add_col, clear_col = st.columns([1, 4])
         with add_col:
-            if st.button(t("add_item"), type="secondary"):
-                new_line = pd.DataFrame(
-                    [
-                        {
-                            "item_name": new_item_name,
-                            "quantity": new_quantity,
-                            "unit_price": new_unit_price,
-                            "amount": float(new_amount),
-                            "notes": new_notes,
-                        }
-                    ]
-                )
-                st.session_state.line_items = calculate_line_items(pd.concat([st.session_state.line_items, new_line], ignore_index=True))
+            st.button(t("add_item"), type="secondary", on_click=add_current_item_to_list)
         with clear_col:
-            if st.button(t("clear_items")):
-                st.session_state.line_items = default_line_items()
+            st.button(t("clear_items"), on_click=clear_line_items)
 
-        line_items = calculate_line_items(st.session_state.line_items)
+        line_items = all_visible_line_items()
         total = line_items_total(line_items)
         if not line_items.empty:
             st.caption(t("current_items"))
-            st.dataframe(line_items, width="stretch", hide_index=True)
+            st.dataframe(display_line_items(line_items), width="stretch", hide_index=True)
         st.metric(t("total"), f"{total:,.0f}")
 
         row = {
