@@ -86,6 +86,10 @@ TEXT = {
         "amount": "金額",
         "notes": "備註",
         "total": "合計",
+        "add_item": "新增明細",
+        "clear_items": "清空明細",
+        "current_amount": "本筆金額",
+        "current_items": "目前明細",
         "save": "儲存到紀錄",
         "saved": "已儲存收據紀錄。",
         "print_hint": "可用瀏覽器列印功能把下方收據列印或另存 PDF。",
@@ -153,6 +157,10 @@ TEXT = {
         "amount": "Amount",
         "notes": "Notes",
         "total": "Total",
+        "add_item": "Add item",
+        "clear_items": "Clear items",
+        "current_amount": "Current amount",
+        "current_items": "Current items",
         "save": "Save to log",
         "saved": "Receipt record saved.",
         "print_hint": "Use your browser print command to print the receipt below or save it as PDF.",
@@ -215,11 +223,7 @@ def money_text(value: Any) -> str:
 
 
 def default_line_items() -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {"item_name": "", "quantity": 1.0, "unit_price": 0.0, "amount": 0.0, "notes": ""},
-        ]
-    )
+    return pd.DataFrame(columns=["item_name", "quantity", "unit_price", "amount", "notes"])
 
 
 def calculate_line_items(items: pd.DataFrame) -> pd.DataFrame:
@@ -237,7 +241,7 @@ def calculate_line_items(items: pd.DataFrame) -> pd.DataFrame:
     keep = (calculated["item_name"].str.strip() != "") | (calculated["quantity"] != 0) | (calculated["unit_price"] != 0) | (calculated["notes"].str.strip() != "")
     calculated = calculated[keep]
     if calculated.empty:
-        return default_line_items()
+        return pd.DataFrame(columns=["item_name", "quantity", "unit_price", "amount", "notes"])
     return calculated[["item_name", "quantity", "unit_price", "amount", "notes"]].reset_index(drop=True)
 
 
@@ -653,18 +657,17 @@ def receipt_html(row: dict[str, Any]) -> str:
     lang = st.session_state.language
     labels = TEXT[lang]
     items = items_from_row(row)
-    item_rows = "\n".join(
-        f"""
-      <tr>
-        <td>{html_lib.escape(str(item["item_name"]))}</td>
-        <td>{html_lib.escape(str(item["quantity"]))}</td>
-        <td>{html_lib.escape(str(item["unit_price"]))}</td>
-        <td>{money_text(item["amount"])}</td>
-        <td>{html_lib.escape(str(item["notes"]))}</td>
-      </tr>"""
+    item_rows = "".join(
+        "<tr>"
+        f"<td>{html_lib.escape(str(item['item_name']))}</td>"
+        f"<td>{html_lib.escape(str(item['quantity']))}</td>"
+        f"<td>{html_lib.escape(str(item['unit_price']))}</td>"
+        f"<td>{money_text(item['amount'])}</td>"
+        f"<td>{html_lib.escape(str(item['notes']))}</td>"
+        "</tr>"
         for _, item in items.iterrows()
     )
-    empty_rows = "\n".join("<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>" for _ in range(max(0, 3 - len(items))))
+    empty_rows = "".join("<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>" for _ in range(max(0, 3 - len(items))))
     return f"""
 <section class="receipt-paper">
   <div class="receipt-top">
@@ -818,25 +821,42 @@ def main() -> None:
             seller_phone = st.text_input(t("seller_phone"), value=default_vendor["seller_phone"])
 
         st.subheader(t("items"))
-        edited_items = st.data_editor(
-            st.session_state.line_items,
-            num_rows="dynamic",
-            width="stretch",
-            hide_index=True,
-            column_order=["item_name", "quantity", "unit_price", "amount", "notes"],
-            disabled=["amount"],
-            column_config={
-                "item_name": st.column_config.TextColumn(t("item_name"), width="large"),
-                "quantity": st.column_config.NumberColumn(t("quantity"), min_value=0.0, step=1.0, format="%.2f"),
-                "unit_price": st.column_config.NumberColumn(t("unit_price"), min_value=0.0, step=1.0, format="%.0f"),
-                "amount": st.column_config.NumberColumn(t("amount"), disabled=True, format="%.0f"),
-                "notes": st.column_config.TextColumn(t("notes"), width="medium"),
-            },
-            key="items_editor",
-        )
-        line_items = calculate_line_items(edited_items)
-        st.session_state.line_items = line_items
+        item_col, qty_col, price_col, amount_col = st.columns([3, 1, 1, 1])
+        with item_col:
+            new_item_name = st.text_input(t("item_name"), key="new_item_name")
+        with qty_col:
+            new_quantity = st.number_input(t("quantity"), min_value=0.0, value=1.0, step=1.0, key="new_quantity")
+        with price_col:
+            new_unit_price = st.number_input(t("unit_price"), min_value=0.0, value=0.0, step=1.0, key="new_unit_price")
+        new_amount = money(new_quantity) * money(new_unit_price)
+        with amount_col:
+            st.metric(t("current_amount"), f"{new_amount:,.0f}")
+        new_notes = st.text_input(t("notes"), key="new_notes")
+
+        add_col, clear_col = st.columns([1, 4])
+        with add_col:
+            if st.button(t("add_item"), type="secondary"):
+                new_line = pd.DataFrame(
+                    [
+                        {
+                            "item_name": new_item_name,
+                            "quantity": new_quantity,
+                            "unit_price": new_unit_price,
+                            "amount": float(new_amount),
+                            "notes": new_notes,
+                        }
+                    ]
+                )
+                st.session_state.line_items = calculate_line_items(pd.concat([st.session_state.line_items, new_line], ignore_index=True))
+        with clear_col:
+            if st.button(t("clear_items")):
+                st.session_state.line_items = default_line_items()
+
+        line_items = calculate_line_items(st.session_state.line_items)
         total = line_items_total(line_items)
+        if not line_items.empty:
+            st.caption(t("current_items"))
+            st.dataframe(line_items, width="stretch", hide_index=True)
         st.metric(t("total"), f"{total:,.0f}")
 
         row = {
