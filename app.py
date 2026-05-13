@@ -925,11 +925,11 @@ def main() -> None:
             st.subheader(t("receipt_info"))
             receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m%d"))
             receipt_date = st.date_input(t("receipt_date"), value=date.today())
-            currency = st.selectbox(
+            currency = st.radio(
                 t("currency"),
                 list(CURRENCY_OPTIONS.keys()),
-                format_func=lambda code: CURRENCY_OPTIONS[code],
                 key="currency",
+                horizontal=True,
             )
             st.subheader(t("buyer_info"))
             buyer_name = st.text_input(t("buyer_name"), value="")
