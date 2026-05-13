@@ -26,6 +26,14 @@ APP_DIR = Path(__file__).parent
 LOCAL_LOG_FILENAME = "mom_dr_receipt_log.csv"
 LOCAL_RECEIPT_FOLDER_NAME = "receipts"
 SHEET_NAME = "mom_dr收據_log"
+DEFAULT_CURRENCY = "TWD"
+CURRENCY_OPTIONS = {
+    "TWD": "TWD - New Taiwan Dollar",
+    "USD": "USD - US Dollar",
+    "JPY": "JPY - Japanese Yen",
+    "EUR": "EUR - Euro",
+    "CNY": "CNY - Chinese Yuan",
+}
 SHEET_HEADERS = [
     "created_at",
     "receipt_no",
@@ -46,6 +54,7 @@ SHEET_HEADERS = [
     "total",
     "sheet_url",
     "items_json",
+    "currency",
 ]
 DEFAULT_VENDOR = {
     "zh": {
@@ -77,6 +86,7 @@ TEXT = {
         "items": "明細",
         "receipt_no": "收據編號",
         "receipt_date": "開立日期",
+        "currency": "幣別",
         "seller_name": "診所名稱",
         "seller_tax_id": "統一編號 / 身分證字號",
         "seller_address": "地址",
@@ -150,6 +160,7 @@ TEXT = {
         "items": "Line item",
         "receipt_no": "Receipt no.",
         "receipt_date": "Issue date",
+        "currency": "Currency",
         "seller_name": "Clinic's name",
         "seller_tax_id": "Tax ID / personal ID",
         "seller_address": "Address",
@@ -226,6 +237,19 @@ def money(value: Any) -> Decimal:
 
 def money_text(value: Any) -> str:
     return f"{money(value):.0f}"
+
+
+def row_currency(row: dict[str, Any]) -> str:
+    currency = str(row.get("currency", "") or DEFAULT_CURRENCY).strip().upper()
+    return currency if currency else DEFAULT_CURRENCY
+
+
+def money_display(value: Any, currency: str | None = None) -> str:
+    return f"{currency or DEFAULT_CURRENCY} {money(value):,.0f}"
+
+
+def money_header(label: str, currency: str | None = None) -> str:
+    return f"{label} ({currency or DEFAULT_CURRENCY})"
 
 
 def default_line_items() -> pd.DataFrame:
@@ -352,10 +376,12 @@ def clear_line_items() -> None:
 
 def display_line_items(items: pd.DataFrame) -> pd.DataFrame:
     labels = TEXT[st.session_state.language]
+    currency = st.session_state.get("currency", DEFAULT_CURRENCY)
     displayed = calculate_line_items(items).copy()
     if displayed.empty:
         return displayed
-    displayed["amount"] = displayed["amount"].map(money_text)
+    displayed["unit_price"] = displayed["unit_price"].map(lambda value: money_display(value, currency))
+    displayed["amount"] = displayed["amount"].map(lambda value: money_display(value, currency))
     return displayed.rename(
         columns={
             "item_name": labels["item_name"],
@@ -497,6 +523,7 @@ def draw_text(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: Any, font: I
 def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     labels = TEXT[st.session_state.language]
     items = items_from_row(row)
+    currency = row_currency(row)
     width, height = 1400, 1050
     margin = 70
     image = Image.new("RGB", (width, height), "#fffdf7")
@@ -544,7 +571,13 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     table_w = width - (margin + 40) * 2
     row_h = 62
     col_widths = [280, 180, 210, 220, table_w - 890]
-    headers = [labels["item_name"], labels["quantity"], labels["unit_price"], labels["amount"], labels["line_note"]]
+    headers = [
+        labels["item_name"],
+        labels["quantity"],
+        money_header(labels["unit_price"], currency),
+        money_header(labels["amount"], currency),
+        labels["line_note"],
+    ]
     draw.rectangle((table_x, table_y, table_x + table_w, table_y + row_h), fill=fill_head, outline=border, width=2)
     current_x = table_x
     visible_rows = max(4, len(items))
@@ -557,8 +590,8 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
         values = [
             item["item_name"],
             item["quantity"],
-            item["unit_price"],
-            money_text(item["amount"]),
+            money_display(item["unit_price"], currency),
+            money_display(item["amount"], currency),
             item["notes"],
         ]
         current_x = table_x
@@ -569,7 +602,7 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
         draw.line((table_x, table_y + row_h * line, table_x + table_w, table_y + row_h * line), fill=border, width=2)
 
     y = table_y + row_h * table_rows + 65
-    total_text = f"{labels['grand_total']}: {row['total']}"
+    total_text = f"{labels['grand_total']}: {money_display(row['total'], currency)}"
     total_box = draw.textbbox((0, 0), total_text, font=title_font)
     draw_text(draw, (width - margin - 40 - (total_box[2] - total_box[0]), y), total_text, title_font)
     y += 85
@@ -600,6 +633,8 @@ def normalize_records(records: pd.DataFrame) -> pd.DataFrame:
     for header in SHEET_HEADERS:
         if header not in normalized.columns:
             normalized[header] = ""
+    if "currency" in normalized.columns:
+        normalized["currency"] = normalized["currency"].replace("", DEFAULT_CURRENCY).fillna(DEFAULT_CURRENCY)
     normalized = normalized[SHEET_HEADERS].fillna("")
     for header in SHEET_HEADERS:
         normalized[header] = normalized[header].astype(str)
@@ -639,13 +674,14 @@ def record_option_label(index: int, row: pd.Series) -> str:
     receipt_date = str(row.get("receipt_date", "")).strip()
     item_name = str(row.get("item_name", "")).strip()
     total = str(row.get("total", "")).strip()
+    currency = str(row.get("currency", "") or DEFAULT_CURRENCY).strip()
     parts = [receipt_no]
     if receipt_date:
         parts.append(receipt_date)
     if item_name:
         parts.append(item_name)
     if total:
-        parts.append(f"NT$ {total}")
+        parts.append(money_display(total, currency))
     return " | ".join(parts)
 
 
@@ -729,12 +765,13 @@ def receipt_html(row: dict[str, Any]) -> str:
     lang = st.session_state.language
     labels = TEXT[lang]
     items = items_from_row(row)
+    currency = row_currency(row)
     item_rows = "".join(
         "<tr>"
         f"<td>{html_lib.escape(str(item['item_name']))}</td>"
         f"<td>{html_lib.escape(str(item['quantity']))}</td>"
-        f"<td>{html_lib.escape(str(item['unit_price']))}</td>"
-        f"<td>{money_text(item['amount'])}</td>"
+        f"<td>{money_display(item['unit_price'], currency)}</td>"
+        f"<td>{money_display(item['amount'], currency)}</td>"
         f"<td>{html_lib.escape(str(item['notes']))}</td>"
         "</tr>"
         for _, item in items.iterrows()
@@ -763,8 +800,8 @@ def receipt_html(row: dict[str, Any]) -> str:
       <tr>
         <th>{labels["item_name"]}</th>
         <th>{labels["quantity"]}</th>
-        <th>{labels["unit_price"]}</th>
-        <th>{labels["amount"]}</th>
+        <th>{money_header(labels["unit_price"], currency)}</th>
+        <th>{money_header(labels["amount"], currency)}</th>
         <th>{labels["line_note"]}</th>
       </tr>
     </thead>
@@ -773,7 +810,7 @@ def receipt_html(row: dict[str, Any]) -> str:
 {empty_rows}
     </tbody>
   </table>
-  <div class="receipt-total">{labels["grand_total"]}: {row["total"]}</div>
+  <div class="receipt-total">{labels["grand_total"]}: {money_display(row["total"], currency)}</div>
   <div class="receipt-sign">{labels["signature"]}: ____________________</div>
 </section>
 """
@@ -857,6 +894,8 @@ def main() -> None:
         st.session_state.local_receipt_folder = default_local_receipt_folder()
     if "line_items" not in st.session_state:
         st.session_state.line_items = default_line_items()
+    if "currency" not in st.session_state:
+        st.session_state.currency = DEFAULT_CURRENCY
     styles()
 
     st.session_state.language = st.sidebar.radio(
@@ -886,9 +925,15 @@ def main() -> None:
             st.subheader(t("receipt_info"))
             receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m%d"))
             receipt_date = st.date_input(t("receipt_date"), value=date.today())
+            currency = st.selectbox(
+                t("currency"),
+                list(CURRENCY_OPTIONS.keys()),
+                format_func=lambda code: CURRENCY_OPTIONS[code],
+                key="currency",
+            )
             st.subheader(t("buyer_info"))
             buyer_name = st.text_input(t("buyer_name"), value="")
-            patient_dob = st.date_input(t("patient_dob"), value=None)
+            patient_dob = st.date_input(t("patient_dob"), value=None, min_value=date(1900, 1, 1), max_value=date.today())
             passport_no = st.text_input(t("passport_no"), value="")
         with col_b:
             st.subheader(t("seller_info"))
@@ -907,7 +952,7 @@ def main() -> None:
             new_unit_price = st.number_input(t("unit_price"), min_value=0.0, value=0.0, step=1.0, key="new_unit_price")
         new_amount = money(new_quantity) * money(new_unit_price)
         with amount_col:
-            st.metric(t("current_amount"), f"{new_amount:,.0f}")
+            st.metric(t("current_amount"), money_display(new_amount, currency))
         new_notes = st.text_input(t("notes"), key="new_notes")
 
         add_col, clear_col = st.columns([1, 4])
@@ -921,13 +966,14 @@ def main() -> None:
         if not line_items.empty:
             st.caption(t("current_items"))
             st.dataframe(display_line_items(line_items), width="stretch", hide_index=True)
-        st.metric(t("total"), f"{total:,.0f}")
+        st.metric(t("total"), money_display(total, currency))
 
         row = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "receipt_no": receipt_no,
             "language": st.session_state.language,
             "receipt_date": receipt_date.isoformat(),
+            "currency": currency,
             "seller_name": seller_name,
             "seller_tax_id": seller_tax_id,
             "seller_address": seller_address,
