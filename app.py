@@ -520,11 +520,69 @@ def draw_text(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: Any, font: I
     draw.text(xy, str(text or ""), font=font, fill=fill)
 
 
+def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    box = draw.textbbox((0, 0), text, font=font)
+    return box[2] - box[0]
+
+
+def wrap_text(draw: ImageDraw.ImageDraw, text: Any, font: ImageFont.ImageFont, max_width: int) -> list[str]:
+    value = str(text or "")
+    if not value:
+        return [""]
+    lines: list[str] = []
+    for paragraph in value.splitlines() or [""]:
+        words = paragraph.split(" ")
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if text_width(draw, candidate, font) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+            if text_width(draw, word, font) <= max_width:
+                current = word
+                continue
+            chunk = ""
+            for char in word:
+                candidate_chunk = f"{chunk}{char}"
+                if text_width(draw, candidate_chunk, font) <= max_width:
+                    chunk = candidate_chunk
+                else:
+                    if chunk:
+                        lines.append(chunk)
+                    chunk = char
+            current = chunk
+        lines.append(current)
+    return lines
+
+
+def draw_wrapped_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: Any,
+    font: ImageFont.ImageFont,
+    max_width: int,
+    fill: str = "#1f1b18",
+    line_gap: int = 6,
+    max_lines: int | None = None,
+) -> int:
+    lines = wrap_text(draw, text, font, max_width)
+    if max_lines is not None:
+        lines = lines[:max_lines]
+    x, y = xy
+    line_height = draw.textbbox((0, 0), "Ag", font=font)[3] + line_gap
+    for line in lines:
+        draw.text((x, y), line, font=font, fill=fill)
+        y += line_height
+    return y
+
+
 def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     labels = TEXT[st.session_state.language]
     items = items_from_row(row)
     currency = row_currency(row)
-    width, height = 1400, 1050
+    width, height = 1600, 1200
     margin = 70
     image = Image.new("RGB", (width, height), "#fffdf7")
     draw = ImageDraw.Draw(image)
@@ -535,42 +593,46 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
 
     border = "#2f2a25"
     fill_head = "#f4ead8"
+    content_right = width - margin - 40
     draw.rectangle((margin, 30, width - margin, height - 40), outline=border, width=2)
 
     y = 85
     draw_text(draw, (margin + 40, y), labels["receipt_title"], title_font)
     draw_text(draw, (width - 330, y + 10), f"{labels['tax_id_label']}: {row['seller_tax_id']}", small_font)
     y += 95
-    draw.line((margin + 40, y, width - margin - 40, y), fill=border, width=3)
+    draw.line((margin + 40, y, content_right, y), fill=border, width=3)
     y += 32
     draw_text(draw, (margin + 40, y), f"{labels['receipt_no']}: {row['receipt_no']}", body_font)
-    draw_text(draw, (width - 430, y), f"{labels['receipt_date']}: {row['receipt_date']}", body_font)
+    draw_text(draw, (width - 520, y), f"{labels['receipt_date']}: {row['receipt_date']}", body_font)
     y += 52
-    draw.line((margin + 40, y, width - margin - 40, y), fill=border, width=1)
+    draw.line((margin + 40, y, content_right, y), fill=border, width=1)
 
     y += 32
     left_x = margin + 40
-    right_x = margin + 650
+    right_x = margin + 720
+    left_w = 540
+    right_w = content_right - right_x
     draw_text(draw, (left_x, y), labels["seller_name"], head_font)
-    draw_text(draw, (left_x, y + 42), row["seller_name"], body_font)
+    left_bottom = draw_wrapped_text(draw, (left_x, y + 42), row["seller_name"], body_font, left_w, max_lines=2)
     draw_text(draw, (right_x, y), labels["seller_address"], head_font)
-    draw_text(draw, (right_x, y + 42), row["seller_address"], body_font)
-    y += 92
+    right_bottom = draw_wrapped_text(draw, (right_x, y + 42), row["seller_address"], body_font, right_w, max_lines=3)
+    y = max(left_bottom, right_bottom) + 24
     draw_text(draw, (left_x, y), labels["seller_phone"], head_font)
-    draw_text(draw, (left_x, y + 42), row["seller_phone"], body_font)
+    left_bottom = draw_wrapped_text(draw, (left_x, y + 42), row["seller_phone"], body_font, left_w, max_lines=1)
     draw_text(draw, (right_x, y), labels["buyer_name"], head_font)
-    draw_text(draw, (right_x, y + 42), row["buyer_name"], body_font)
-    y += 92
+    right_bottom = draw_wrapped_text(draw, (right_x, y + 42), row["buyer_name"], body_font, right_w, max_lines=2)
+    y = max(left_bottom, right_bottom) + 24
     draw_text(draw, (left_x, y), labels["patient_dob"], head_font)
-    draw_text(draw, (left_x, y + 42), row.get("patient_dob", ""), body_font)
+    left_bottom = draw_wrapped_text(draw, (left_x, y + 42), row.get("patient_dob", ""), body_font, left_w, max_lines=1)
     draw_text(draw, (right_x, y), labels["passport_no"], head_font)
-    draw_text(draw, (right_x, y + 42), row.get("passport_no", ""), body_font)
+    right_bottom = draw_wrapped_text(draw, (right_x, y + 42), row.get("passport_no", ""), body_font, right_w, max_lines=1)
+    y = max(left_bottom, right_bottom)
 
     table_x = margin + 40
-    table_y = y + 110
+    table_y = y + 70
     table_w = width - (margin + 40) * 2
-    row_h = 62
-    col_widths = [280, 180, 210, 220, table_w - 890]
+    row_h = 72
+    col_widths = [320, 160, 260, 260, table_w - 1000]
     headers = [
         labels["item_name"],
         labels["quantity"],
@@ -584,7 +646,7 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     table_rows = visible_rows + 1
     for index, col_w in enumerate(col_widths):
         draw.rectangle((current_x, table_y, current_x + col_w, table_y + row_h * table_rows), outline=border, width=2)
-        draw_text(draw, (current_x + 18, table_y + 22), headers[index], head_font)
+        draw_wrapped_text(draw, (current_x + 18, table_y + 14), headers[index], head_font, col_w - 28, max_lines=2, line_gap=3)
         current_x += col_w
     for row_index, item in items.iterrows():
         values = [
@@ -596,19 +658,27 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
         ]
         current_x = table_x
         for index, col_w in enumerate(col_widths):
-            draw_text(draw, (current_x + 18, table_y + row_h * (row_index + 1) + 20), values[index], small_font)
+            draw_wrapped_text(
+                draw,
+                (current_x + 18, table_y + row_h * (row_index + 1) + 16),
+                values[index],
+                small_font,
+                col_w - 28,
+                max_lines=2,
+                line_gap=3,
+            )
             current_x += col_w
     for line in range(1, table_rows):
         draw.line((table_x, table_y + row_h * line, table_x + table_w, table_y + row_h * line), fill=border, width=2)
 
-    y = table_y + row_h * table_rows + 65
+    y = min(table_y + row_h * table_rows + 65, height - 190)
     total_text = f"{labels['grand_total']}: {money_display(row['total'], currency)}"
     total_box = draw.textbbox((0, 0), total_text, font=title_font)
-    draw_text(draw, (width - margin - 40 - (total_box[2] - total_box[0]), y), total_text, title_font)
+    draw_text(draw, (content_right - (total_box[2] - total_box[0]), y), total_text, title_font)
     y += 85
     sign_text = f"{labels['signature']}: ____________________"
     sign_box = draw.textbbox((0, 0), sign_text, font=small_font)
-    draw_text(draw, (width - margin - 40 - (sign_box[2] - sign_box[0]), y), sign_text, small_font)
+    draw_text(draw, (content_right - (sign_box[2] - sign_box[0]), y), sign_text, small_font)
 
     output = BytesIO()
     image.save(output, format="JPEG", quality=95)
