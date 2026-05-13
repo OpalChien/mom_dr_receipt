@@ -36,6 +36,8 @@ SHEET_HEADERS = [
     "seller_address",
     "seller_phone",
     "buyer_name",
+    "patient_dob",
+    "passport_no",
     "item_name",
     "quantity",
     "unit_price",
@@ -53,7 +55,7 @@ DEFAULT_VENDOR = {
         "seller_phone": "",
     },
     "en": {
-        "seller_name": "Cheng Pin Clinic",
+        "seller_name": "Chen Pin Clinic",
         "seller_tax_id": "97974582",
         "seller_address": "No. 317, Sec. 1, Dunhua S. Rd., Da'an Dist., Taipei City 106, Taiwan",
         "seller_phone": "",
@@ -70,16 +72,18 @@ TEXT = {
         "settings_tab": "連線狀態",
         "language": "語言",
         "receipt_info": "收據資料",
-        "seller_info": "店家 / 受領人",
-        "buyer_info": "買受人",
+        "seller_info": "診所資訊",
+        "buyer_info": "病患資訊",
         "items": "明細",
         "receipt_no": "收據編號",
         "receipt_date": "開立日期",
-        "seller_name": "廠商或受領人姓名",
+        "seller_name": "診所名稱",
         "seller_tax_id": "統一編號 / 身分證字號",
         "seller_address": "地址",
         "seller_phone": "電話",
-        "buyer_name": "買受人抬頭",
+        "buyer_name": "病患姓名",
+        "patient_dob": "出生日期",
+        "passport_no": "護照號碼",
         "item_name": "品名",
         "quantity": "數量",
         "unit_price": "單價",
@@ -141,16 +145,18 @@ TEXT = {
         "settings_tab": "Connection",
         "language": "Language",
         "receipt_info": "Receipt details",
-        "seller_info": "Vendor / payee",
-        "buyer_info": "Buyer",
+        "seller_info": "Clinic information",
+        "buyer_info": "Patient information",
         "items": "Line item",
         "receipt_no": "Receipt no.",
         "receipt_date": "Issue date",
-        "seller_name": "Vendor or payee name",
+        "seller_name": "Clinic's name",
         "seller_tax_id": "Tax ID / personal ID",
         "seller_address": "Address",
         "seller_phone": "Phone",
-        "buyer_name": "Buyer name",
+        "buyer_name": "Patient's name",
+        "patient_dob": "Date of birth",
+        "passport_no": "Passport no.",
         "item_name": "Item",
         "quantity": "Quantity",
         "unit_price": "Unit price",
@@ -491,7 +497,7 @@ def draw_text(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: Any, font: I
 def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     labels = TEXT[st.session_state.language]
     items = items_from_row(row)
-    width, height = 1400, 900
+    width, height = 1400, 1050
     margin = 70
     image = Image.new("RGB", (width, height), "#fffdf7")
     draw = ImageDraw.Draw(image)
@@ -527,6 +533,11 @@ def receipt_jpg_bytes(row: dict[str, Any]) -> bytes:
     draw_text(draw, (left_x, y + 42), row["seller_phone"], body_font)
     draw_text(draw, (right_x, y), labels["buyer_name"], head_font)
     draw_text(draw, (right_x, y + 42), row["buyer_name"], body_font)
+    y += 92
+    draw_text(draw, (left_x, y), labels["patient_dob"], head_font)
+    draw_text(draw, (left_x, y + 42), row.get("patient_dob", ""), body_font)
+    draw_text(draw, (right_x, y), labels["passport_no"], head_font)
+    draw_text(draw, (right_x, y + 42), row.get("passport_no", ""), body_font)
 
     table_x = margin + 40
     table_y = y + 110
@@ -744,6 +755,8 @@ def receipt_html(row: dict[str, Any]) -> str:
     <div><strong>{labels["seller_address"]}</strong><br>{row["seller_address"]}</div>
     <div><strong>{labels["seller_phone"]}</strong><br>{row["seller_phone"]}</div>
     <div><strong>{labels["buyer_name"]}</strong><br>{row["buyer_name"]}</div>
+    <div><strong>{labels["patient_dob"]}</strong><br>{row.get("patient_dob", "")}</div>
+    <div><strong>{labels["passport_no"]}</strong><br>{row.get("passport_no", "")}</div>
   </div>
   <table class="receipt-table">
     <thead>
@@ -873,7 +886,10 @@ def main() -> None:
             st.subheader(t("receipt_info"))
             receipt_no = st.text_input(t("receipt_no"), value=datetime.now().strftime("CPC%Y%m%d"))
             receipt_date = st.date_input(t("receipt_date"), value=date.today())
+            st.subheader(t("buyer_info"))
             buyer_name = st.text_input(t("buyer_name"), value="")
+            patient_dob = st.date_input(t("patient_dob"), value=None)
+            passport_no = st.text_input(t("passport_no"), value="")
         with col_b:
             st.subheader(t("seller_info"))
             seller_name = st.text_input(t("seller_name"), value=default_vendor["seller_name"])
@@ -917,6 +933,8 @@ def main() -> None:
             "seller_address": seller_address,
             "seller_phone": seller_phone,
             "buyer_name": buyer_name,
+            "patient_dob": patient_dob.isoformat() if patient_dob else "",
+            "passport_no": passport_no,
             "item_name": row_item_summary(line_items, "item_name"),
             "quantity": row_item_summary(line_items, "quantity"),
             "unit_price": row_item_summary(line_items, "unit_price"),
